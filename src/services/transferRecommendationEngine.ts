@@ -6,8 +6,8 @@ import type {
   Product,
   Store,
   TransferRecommendation,
-} from '../types';
-import { getFreshnessState } from '../utils/formatters';
+} from '../types/index.js';
+import { getFreshnessState } from '../utils/formatters.js';
 
 interface EngineInput {
   stores: Store[];

@@ -1,4 +1,4 @@
-import type { FreshnessState, FulfilmentPreference, OrderStatus, PickTaskStatus } from '../types';
+import type { FreshnessState, FulfilmentPreference, OrderStatus, PickTaskStatus } from '../types/index.js';
 
 export function formatInr(amount: number): string {
   return new Intl.NumberFormat('en-IN', {

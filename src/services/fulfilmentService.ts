@@ -10,8 +10,8 @@ import type {
   RescueEvaluation,
   Store,
   TradeoffWeights,
-} from '../types';
-import { formatInr, getFreshnessState } from '../utils/formatters';
+} from '../types/index.js';
+import { formatInr, getFreshnessState } from '../utils/formatters.js';
 
 export const FIXED_CART_HOLD_MINUTES = 10;
 

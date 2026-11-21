@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import { fileURLToPath } from 'url';
 import { GoogleGenAI, ThinkingLevel, Type } from '@google/genai';
 
 export interface CatalogIndexEntry {
@@ -104,7 +105,16 @@ export const CATALOG_INDEX_ENTRIES: CatalogIndexEntry[] = [
   },
 ];
 
-const IMAGES_DIR = path.resolve(process.cwd(), 'src/assets/images');
+function resolveImagesDir(): string {
+  const fromCwd = path.resolve(process.cwd(), 'src/assets/images');
+  if (fs.existsSync(fromCwd)) return fromCwd;
+  const currentFileDir = path.dirname(fileURLToPath(import.meta.url));
+  const fromModule = path.resolve(currentFileDir, '../src/assets/images');
+  if (fs.existsSync(fromModule)) return fromModule;
+  return fromCwd;
+}
+
+const IMAGES_DIR = resolveImagesDir();
 const ALLOWED_MIME_TYPES = new Set(['image/jpeg', 'image/jpg', 'image/png', 'image/webp']);
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 

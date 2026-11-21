@@ -1,11 +1,11 @@
 import fs from 'fs';
-import { createSeededNetworkState, DEMO_STORES } from '../src/data/seedData';
+import { createSeededNetworkState, DEMO_PRODUCTS, DEMO_STORES } from '../src/data/seedData.js';
 import {
   computeSellableStock,
   evaluateCartHoldPolicy,
   rankFulfilmentOptions,
-} from '../src/services/fulfilmentService';
-import { generateDynamicTransferRecommendations } from '../src/services/transferRecommendationEngine';
+} from '../src/services/fulfilmentService.js';
+import { generateDynamicTransferRecommendations } from '../src/services/transferRecommendationEngine.js';
 import type {
   AuthSession,
   CartItem,
@@ -22,12 +22,32 @@ import type {
   TransferDecision,
   TransferRecommendation,
   UserRole,
-} from '../src/types';
-import { getPreferenceLabel } from '../src/utils/formatters';
+} from '../src/types/index.js';
+import { getPreferenceLabel } from '../src/utils/formatters.js';
 
 const STATE_FILE_PATH = '/tmp/synapse_network_state_v2.json';
+const REMOTE_STATE_KEY = 'synapse:network_state:v2';
+
+export interface CompactFallbackState {
+  epochId?: string;
+  revision?: number;
+  inventory?: NetworkState['inventory'];
+  cart?: CartItem[];
+  orders?: Order[];
+  pickTasks?: PickTask[];
+  verifications?: StockVerification[];
+  demandSignals?: DemandSignal[];
+  transferRecommendations?: TransferRecommendation[];
+  transferDecisions?: TransferDecision[];
+  inventoryMovements?: InventoryMovement[];
+  activityLogs?: NetworkActivity[];
+  registeredInterests?: string[];
+}
 
 interface PersistedServerState extends Omit<NetworkState, 'cart'> {
+  epochId: string;
+  revision: number;
+  explicitReset?: boolean;
   reservations: CartItem[];
 }
 
@@ -45,15 +65,125 @@ declare global {
   var _synapseStateLock: Promise<void> | undefined;
 }
 
-function toPersistedState(seed: NetworkState): PersistedServerState {
+function generateEpochId(): string {
+  return `epoch-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function getKvConfig(): { url: string; token: string } | null {
+  const url = (process.env.KV_REST_API_URL || process.env.UPSTASH_REDIS_REST_URL || '').trim();
+  const token = (process.env.KV_REST_API_TOKEN || process.env.UPSTASH_REDIS_REST_TOKEN || '').trim();
+  if (!url || !token) return null;
+  return { url: url.replace(/\/+$/, ''), token };
+}
+
+async function readRemoteKvState(): Promise<PersistedServerState | null> {
+  const kv = getKvConfig();
+  if (!kv) return null;
+  try {
+    const res = await fetch(`${kv.url}/get/${encodeURIComponent(REMOTE_STATE_KEY)}`, {
+      headers: { Authorization: `Bearer ${kv.token}` },
+      cache: 'no-store',
+    });
+    if (!res.ok) return null;
+    const json = (await res.json()) as { result?: unknown };
+    if (typeof json.result === 'string' && json.result) {
+      return JSON.parse(json.result) as PersistedServerState;
+    }
+  } catch {
+    // Fall back to in-memory / /tmp state if remote KV is unreachable
+  }
+  return null;
+}
+
+async function writeRemoteKvState(state: PersistedServerState): Promise<void> {
+  const kv = getKvConfig();
+  if (!kv) return;
+  try {
+    await fetch(`${kv.url}/set/${encodeURIComponent(REMOTE_STATE_KEY)}`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${kv.token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(JSON.stringify(state)),
+    });
+  } catch {
+    // Non-blocking fallback
+  }
+}
+
+function toPersistedState(seed: NetworkState, explicitReset = false): PersistedServerState {
   const { cart, dynamicSuggestions: _unused, ...rest } = seed;
   return {
     ...rest,
+    epochId: rest.epochId || generateEpochId(),
+    revision: typeof rest.revision === 'number' && rest.revision >= 1 ? rest.revision : 1,
+    explicitReset,
     reservations: cart || [],
   };
 }
 
-function loadServerState(): PersistedServerState {
+function normalizeParsedState(parsed: PersistedServerState): PersistedServerState {
+  // Auto-migrate legacy electronic-city node to koramangala if encountered
+  const hasLegacy = parsed.stores.some((s) => s.id === 'electronic-city');
+  const migrateId = (id: string) => (id === 'electronic-city' ? 'koramangala' : id);
+  const migrateName = (txt: string) =>
+    txt.includes('Electronic City') ? txt.replace('Electronic City', 'Koramangala') : txt;
+
+  return {
+    ...parsed,
+    epochId: parsed.epochId || generateEpochId(),
+    revision: typeof parsed.revision === 'number' && parsed.revision >= 1 ? parsed.revision : 1,
+    explicitReset: Boolean(parsed.explicitReset),
+    stores: hasLegacy ? DEMO_STORES : parsed.stores,
+    products: Array.isArray(parsed.products) && parsed.products.length > 0 ? parsed.products : DEMO_PRODUCTS,
+    inventory: (parsed.inventory || []).map((inv) => {
+      const storeId = migrateId(inv.storeId);
+      return {
+        ...inv,
+        id: `${storeId}_${inv.productId}`,
+        storeId,
+      };
+    }),
+    reservations: Array.isArray(parsed.reservations) ? parsed.reservations : [],
+    orders: Array.isArray(parsed.orders) ? parsed.orders : [],
+    pickTasks: Array.isArray(parsed.pickTasks) ? parsed.pickTasks : [],
+    verifications: Array.isArray(parsed.verifications) ? parsed.verifications : [],
+    demandSignals: Array.isArray(parsed.demandSignals) ? parsed.demandSignals : [],
+    transferRecommendations: (parsed.transferRecommendations || []).map((r) => ({
+      ...r,
+      sourceStoreId: migrateId(r.sourceStoreId),
+      sourceStoreName: migrateName(r.sourceStoreName),
+      destinationStoreId: migrateId(r.destinationStoreId),
+      destinationStoreName: migrateName(r.destinationStoreName),
+      reason: migrateName(r.reason),
+    })),
+    transferDecisions: Array.isArray(parsed.transferDecisions)
+      ? parsed.transferDecisions
+      : [],
+    inventoryMovements: Array.isArray(parsed.inventoryMovements)
+      ? parsed.inventoryMovements
+      : [],
+    activityLogs: Array.isArray(parsed.activityLogs) ? parsed.activityLogs : [],
+    registeredInterests: Array.isArray(parsed.registeredInterests)
+      ? parsed.registeredInterests
+      : [],
+  };
+}
+
+async function loadServerState(): Promise<PersistedServerState> {
+  const remote = await readRemoteKvState();
+  if (
+    remote &&
+    Array.isArray(remote.stores) &&
+    Array.isArray(remote.products) &&
+    Array.isArray(remote.inventory)
+  ) {
+    const normalized = normalizeParsedState(remote);
+    global._synapseServerState = normalized;
+    return normalized;
+  }
+
   if (global._synapseServerState) {
     return global._synapseServerState;
   }
@@ -68,47 +198,7 @@ function loadServerState(): PersistedServerState {
         Array.isArray(parsed.products) &&
         Array.isArray(parsed.inventory)
       ) {
-        // Auto-migrate legacy electronic-city node to koramangala if encountered
-        const hasLegacy = parsed.stores.some((s) => s.id === 'electronic-city');
-        const migrateId = (id: string) => (id === 'electronic-city' ? 'koramangala' : id);
-        const migrateName = (txt: string) =>
-          txt.includes('Electronic City') ? txt.replace('Electronic City', 'Koramangala') : txt;
-
-        const normalized: PersistedServerState = {
-          ...parsed,
-          stores: hasLegacy ? DEMO_STORES : parsed.stores,
-          inventory: (parsed.inventory || []).map((inv) => {
-            const storeId = migrateId(inv.storeId);
-            return {
-              ...inv,
-              id: `${storeId}_${inv.productId}`,
-              storeId,
-            };
-          }),
-          reservations: Array.isArray(parsed.reservations) ? parsed.reservations : [],
-          orders: Array.isArray(parsed.orders) ? parsed.orders : [],
-          pickTasks: Array.isArray(parsed.pickTasks) ? parsed.pickTasks : [],
-          verifications: Array.isArray(parsed.verifications) ? parsed.verifications : [],
-          demandSignals: Array.isArray(parsed.demandSignals) ? parsed.demandSignals : [],
-          transferRecommendations: (parsed.transferRecommendations || []).map((r) => ({
-            ...r,
-            sourceStoreId: migrateId(r.sourceStoreId),
-            sourceStoreName: migrateName(r.sourceStoreName),
-            destinationStoreId: migrateId(r.destinationStoreId),
-            destinationStoreName: migrateName(r.destinationStoreName),
-            reason: migrateName(r.reason),
-          })),
-          transferDecisions: Array.isArray(parsed.transferDecisions)
-            ? parsed.transferDecisions
-            : [],
-          inventoryMovements: Array.isArray(parsed.inventoryMovements)
-            ? parsed.inventoryMovements
-            : [],
-          activityLogs: Array.isArray(parsed.activityLogs) ? parsed.activityLogs : [],
-          registeredInterests: Array.isArray(parsed.registeredInterests)
-            ? parsed.registeredInterests
-            : [],
-        };
+        const normalized = normalizeParsedState(parsed);
         global._synapseServerState = normalized;
         return normalized;
       }
@@ -117,22 +207,90 @@ function loadServerState(): PersistedServerState {
     // Fall back to clean seed when filesystem storage is unavailable
   }
 
-  const seeded = toPersistedState(createSeededNetworkState());
+  const seeded = toPersistedState(createSeededNetworkState(), false);
   global._synapseServerState = seeded;
-  persistToDisk(seeded);
+  await persistState(seeded);
   return seeded;
 }
 
-function persistToDisk(state: PersistedServerState): void {
+async function persistState(state: PersistedServerState): Promise<void> {
   global._synapseServerState = state;
   try {
     fs.writeFileSync(STATE_FILE_PATH, JSON.stringify(state), 'utf8');
   } catch {
     // Serverless read-only environments fall back gracefully to in-memory global state
   }
+  await writeRemoteKvState(state);
 }
 
-async function withStateLock<T>(fn: (state: PersistedServerState) => T): Promise<T> {
+function bumpRevision(state: PersistedServerState, clearReset = true): PersistedServerState {
+  return {
+    ...state,
+    revision: (state.revision || 1) + 1,
+    explicitReset: clearReset ? false : state.explicitReset,
+  };
+}
+
+async function maybeHydrateFromFallback(
+  current: PersistedServerState,
+  fallback?: CompactFallbackState,
+  holderKey?: string
+): Promise<PersistedServerState> {
+  if (!fallback || getKvConfig()) return current;
+  const fbRev = typeof fallback.revision === 'number' ? fallback.revision : 0;
+  const fbEpoch = typeof fallback.epochId === 'string' ? fallback.epochId : '';
+  if (!fbEpoch || fbRev <= 1) return current;
+
+  const isColdLambda = current.revision === 1 && !current.explicitReset && current.epochId !== fbEpoch;
+  const isStaleSameEpoch = current.epochId === fbEpoch && fbRev > current.revision;
+  if (!isColdLambda && !isStaleSameEpoch) return current;
+
+  if (!Array.isArray(fallback.inventory) || fallback.inventory.length === 0) {
+    return current;
+  }
+
+  const cleanHolder = (holderKey || '').trim();
+  const hydratedCart = Array.isArray(fallback.cart)
+    ? fallback.cart.map((c) => ({ ...c, holderKey: c.holderKey || cleanHolder }))
+    : current.reservations;
+
+  const merged = normalizeParsedState({
+    ...current,
+    epochId: fbEpoch,
+    revision: fbRev,
+    explicitReset: false,
+    stores: DEMO_STORES,
+    products: DEMO_PRODUCTS,
+    inventory: fallback.inventory,
+    reservations: hydratedCart,
+    orders: Array.isArray(fallback.orders) ? fallback.orders : current.orders,
+    pickTasks: Array.isArray(fallback.pickTasks) ? fallback.pickTasks : current.pickTasks,
+    verifications: Array.isArray(fallback.verifications) ? fallback.verifications : current.verifications,
+    demandSignals: Array.isArray(fallback.demandSignals) ? fallback.demandSignals : current.demandSignals,
+    transferRecommendations: Array.isArray(fallback.transferRecommendations)
+      ? fallback.transferRecommendations
+      : current.transferRecommendations,
+    transferDecisions: Array.isArray(fallback.transferDecisions)
+      ? fallback.transferDecisions
+      : current.transferDecisions,
+    inventoryMovements: Array.isArray(fallback.inventoryMovements)
+      ? fallback.inventoryMovements
+      : current.inventoryMovements,
+    activityLogs: Array.isArray(fallback.activityLogs) ? fallback.activityLogs : current.activityLogs,
+    registeredInterests: Array.isArray(fallback.registeredInterests)
+      ? fallback.registeredInterests
+      : current.registeredInterests,
+  });
+
+  await persistState(merged);
+  return merged;
+}
+
+async function withStateLock<T>(
+  fn: (state: PersistedServerState) => T | Promise<T>,
+  fallback?: CompactFallbackState,
+  holderKey?: string
+): Promise<T> {
   const prev = global._synapseStateLock || Promise.resolve();
   let release!: () => void;
   global._synapseStateLock = new Promise<void>((resolve) => {
@@ -141,8 +299,9 @@ async function withStateLock<T>(fn: (state: PersistedServerState) => T): Promise
 
   await prev;
   try {
-    const current = loadServerState();
-    return fn(current);
+    const loaded = await loadServerState();
+    const current = await maybeHydrateFromFallback(loaded, fallback, holderKey);
+    return await fn(current);
   } finally {
     release();
   }
@@ -153,10 +312,10 @@ async function withStateLock<T>(fn: (state: PersistedServerState) => T): Promise
  * recalculates live cartHoldQty and sellableQty per (storeId, productId), and logs
  * CART_HOLD_EXPIRED ledger/activity entries.
  */
-function sweepExpiredReservations(
+async function sweepExpiredReservations(
   state: PersistedServerState,
   targetHolderKey?: string
-): { state: PersistedServerState; expiredNotices: string[] } {
+): Promise<{ state: PersistedServerState; expiredNotices: string[] }> {
   const nowMs = Date.now();
   const nowIso = new Date(nowMs).toISOString();
 
@@ -264,14 +423,14 @@ function sweepExpiredReservations(
     return { state, expiredNotices };
   }
 
-  const nextState: PersistedServerState = {
+  const nextState: PersistedServerState = bumpRevision({
     ...state,
     reservations: active,
     inventory: nextInventory,
     inventoryMovements: [...newMovements, ...state.inventoryMovements].slice(0, 250),
     activityLogs: [...newActivities, ...state.activityLogs].slice(0, 200),
-  };
-  persistToDisk(nextState);
+  });
+  await persistState(nextState);
   return { state: nextState, expiredNotices };
 }
 
@@ -287,6 +446,9 @@ function buildClientState(state: PersistedServerState, holderKey: string): Netwo
   });
 
   return {
+    epochId: state.epochId,
+    revision: state.revision,
+    explicitReset: Boolean(state.explicitReset),
     stores: state.stores,
     products: state.products,
     inventory: state.inventory,
@@ -305,8 +467,8 @@ function buildClientState(state: PersistedServerState, holderKey: string): Netwo
 }
 
 export async function getNetworkSnapshot(holderKey: string): Promise<NetworkApiResponse> {
-  return withStateLock((current) => {
-    const { state, expiredNotices } = sweepExpiredReservations(current, holderKey);
+  return withStateLock(async (current) => {
+    const { state, expiredNotices } = await sweepExpiredReservations(current, holderKey);
     return {
       ok: true,
       status: 200,
@@ -317,6 +479,27 @@ export async function getNetworkSnapshot(holderKey: string): Promise<NetworkApiR
   });
 }
 
+export async function hydrateNetworkServerState(input: {
+  holderKey: string;
+  fallbackState?: CompactFallbackState;
+}): Promise<NetworkApiResponse> {
+  const cleanHolder = (input.holderKey || '').trim();
+  return withStateLock(
+    async (current) => {
+      const { state, expiredNotices } = await sweepExpiredReservations(current, cleanHolder);
+      return {
+        ok: true,
+        status: 200,
+        message: 'Server state synchronized.',
+        state: buildClientState(state, cleanHolder),
+        expiredNotices,
+      };
+    },
+    input.fallbackState,
+    cleanHolder
+  );
+}
+
 export async function reserveCartItem(input: {
   holderKey: string;
   productId: string;
@@ -324,6 +507,7 @@ export async function reserveCartItem(input: {
   preference: FulfilmentPreference;
   qty: number;
   actorName?: string;
+  fallbackState?: CompactFallbackState;
 }): Promise<NetworkApiResponse<CartItem>> {
   const cleanHolder = input.holderKey.trim();
   if (!cleanHolder) {
@@ -335,8 +519,8 @@ export async function reserveCartItem(input: {
     }));
   }
 
-  return withStateLock((current) => {
-    const { state, expiredNotices } = sweepExpiredReservations(current, cleanHolder);
+  return withStateLock(async (current) => {
+    const { state, expiredNotices } = await sweepExpiredReservations(current, cleanHolder);
     const validPreferences: FulfilmentPreference[] = ['SAVE_MONEY', 'GET_IT_FASTER', 'SHOP_NEARBY'];
     const safePreference: FulfilmentPreference = validPreferences.includes(input.preference)
       ? input.preference
@@ -519,13 +703,13 @@ export async function reserveCartItem(input: {
       });
     }
 
-    const nextState: PersistedServerState = {
+    const nextState: PersistedServerState = bumpRevision({
       ...state,
       reservations: nextReservations,
       inventory: nextInventory,
       inventoryMovements: movements.slice(0, 250),
-    };
-    persistToDisk(nextState);
+    });
+    await persistState(nextState);
 
     return {
       ok: true,
@@ -539,7 +723,7 @@ export async function reserveCartItem(input: {
       expiredNotices,
       data: savedItem,
     };
-  });
+  }, input.fallbackState, cleanHolder);
 }
 
 export async function updateCartItemQty(input: {
@@ -547,10 +731,11 @@ export async function updateCartItemQty(input: {
   cartItemId: string;
   quantity: number;
   actorName?: string;
+  fallbackState?: CompactFallbackState;
 }): Promise<NetworkApiResponse> {
   const cleanHolder = input.holderKey.trim();
-  return withStateLock((current) => {
-    const { state, expiredNotices } = sweepExpiredReservations(current, cleanHolder);
+  return withStateLock(async (current) => {
+    const { state, expiredNotices } = await sweepExpiredReservations(current, cleanHolder);
     const idx = state.reservations.findIndex(
       (c) => c.id === input.cartItemId && c.holderKey === cleanHolder
     );
@@ -613,13 +798,13 @@ export async function updateCartItemQty(input: {
         });
       }
 
-      const nextState: PersistedServerState = {
+      const nextState: PersistedServerState = bumpRevision({
         ...state,
         reservations: nextReservations,
         inventory: nextInventory,
         inventoryMovements: movements.slice(0, 250),
-      };
-      persistToDisk(nextState);
+      });
+      await persistState(nextState);
       return {
         ok: true,
         status: 200,
@@ -680,12 +865,12 @@ export async function updateCartItemQty(input: {
         : r
     );
 
-    const nextState: PersistedServerState = {
+    const nextState: PersistedServerState = bumpRevision({
       ...state,
       reservations: nextReservations,
       inventory: nextInventory,
-    };
-    persistToDisk(nextState);
+    });
+    await persistState(nextState);
 
     return {
       ok: true,
@@ -696,7 +881,7 @@ export async function updateCartItemQty(input: {
       state: buildClientState(nextState, cleanHolder),
       expiredNotices,
     };
-  });
+  }, input.fallbackState, cleanHolder);
 }
 
 export async function placeNetworkOrder(input: {
@@ -707,10 +892,11 @@ export async function placeNetworkOrder(input: {
   customerPhone: string;
   shippingAddress: string;
   city: string;
+  fallbackState?: CompactFallbackState;
 }): Promise<NetworkApiResponse<Order>> {
   const cleanHolder = input.holderKey.trim();
-  return withStateLock((current) => {
-    const { state, expiredNotices } = sweepExpiredReservations(current, cleanHolder);
+  return withStateLock(async (current) => {
+    const { state, expiredNotices } = await sweepExpiredReservations(current, cleanHolder);
     const holderCart = state.reservations.filter((c) => c.holderKey === cleanHolder);
 
     if (holderCart.length === 0) {
@@ -893,7 +1079,7 @@ export async function placeNetworkOrder(input: {
       createdAt: nowIso,
     };
 
-    const nextState: PersistedServerState = {
+    const nextState: PersistedServerState = bumpRevision({
       ...state,
       reservations: state.reservations.filter((c) => c.holderKey !== cleanHolder),
       inventory: nextInventory,
@@ -901,8 +1087,8 @@ export async function placeNetworkOrder(input: {
       pickTasks: [...createdTasks, ...state.pickTasks],
       inventoryMovements: [...newMovements, ...state.inventoryMovements].slice(0, 250),
       activityLogs: [activity, ...state.activityLogs].slice(0, 200),
-    };
-    persistToDisk(nextState);
+    });
+    await persistState(nextState);
 
     return {
       ok: true,
@@ -912,7 +1098,7 @@ export async function placeNetworkOrder(input: {
       expiredNotices,
       data: newOrder,
     };
-  });
+  }, input.fallbackState, cleanHolder);
 }
 
 export async function verifyStoreInventory(input: {
@@ -922,9 +1108,10 @@ export async function verifyStoreInventory(input: {
   verifiedQty: number;
   discrepancyReason?: string;
   session: AuthSession;
+  fallbackState?: CompactFallbackState;
 }): Promise<NetworkApiResponse<StockVerification>> {
-  return withStateLock((current) => {
-    const { state } = sweepExpiredReservations(current, input.holderKey);
+  return withStateLock(async (current) => {
+    const { state } = await sweepExpiredReservations(current, input.holderKey);
     if (input.session.role === 'CUSTOMER') {
       return {
         ok: false,
@@ -1033,7 +1220,7 @@ export async function verifyStoreInventory(input: {
       createdAt: nowIso,
     };
 
-    const nextState: PersistedServerState = {
+    const nextState: PersistedServerState = bumpRevision({
       ...state,
       inventory: state.inventory.map((r) =>
         r.id === inv.id
@@ -1051,8 +1238,8 @@ export async function verifyStoreInventory(input: {
       verifications: [verification, ...state.verifications],
       inventoryMovements: [movement, ...state.inventoryMovements].slice(0, 250),
       activityLogs: [activity, ...state.activityLogs].slice(0, 200),
-    };
-    persistToDisk(nextState);
+    });
+    await persistState(nextState);
 
     return {
       ok: true,
@@ -1061,16 +1248,17 @@ export async function verifyStoreInventory(input: {
       state: buildClientState(nextState, input.holderKey),
       data: verification,
     };
-  });
+  }, input.fallbackState, input.holderKey);
 }
 
 export async function acceptStorePickTask(input: {
   holderKey: string;
   taskId: string;
   session: AuthSession;
+  fallbackState?: CompactFallbackState;
 }): Promise<NetworkApiResponse> {
-  return withStateLock((current) => {
-    const { state } = sweepExpiredReservations(current, input.holderKey);
+  return withStateLock(async (current) => {
+    const { state } = await sweepExpiredReservations(current, input.holderKey);
     const task = state.pickTasks.find((t) => t.id === input.taskId);
     if (!task) {
       return {
@@ -1114,7 +1302,7 @@ export async function acceptStorePickTask(input: {
       createdAt: nowIso,
     };
 
-    const nextState: PersistedServerState = {
+    const nextState: PersistedServerState = bumpRevision({
       ...state,
       pickTasks: state.pickTasks.map((t) =>
         t.id === task.id ? { ...t, status: 'ACCEPTED', updatedAt: nowIso } : t
@@ -1140,8 +1328,8 @@ export async function acceptStorePickTask(input: {
           : o
       ),
       activityLogs: [activity, ...state.activityLogs].slice(0, 200),
-    };
-    persistToDisk(nextState);
+    });
+    await persistState(nextState);
 
     return {
       ok: true,
@@ -1149,7 +1337,7 @@ export async function acceptStorePickTask(input: {
       message: `Pick task accepted for ${task.orderNumber}.`,
       state: buildClientState(nextState, input.holderKey),
     };
-  });
+  }, input.fallbackState, input.holderKey);
 }
 
 export async function rejectAndReassignPickTask(input: {
@@ -1157,9 +1345,10 @@ export async function rejectAndReassignPickTask(input: {
   taskId: string;
   reason: string;
   session: AuthSession;
+  fallbackState?: CompactFallbackState;
 }): Promise<NetworkApiResponse<{ reassignedStoreName?: string; exception: boolean }>> {
-  return withStateLock((current) => {
-    const { state } = sweepExpiredReservations(current, input.holderKey);
+  return withStateLock(async (current) => {
+    const { state } = await sweepExpiredReservations(current, input.holderKey);
     if (!input.reason.trim()) {
       return {
         ok: false,
@@ -1356,7 +1545,7 @@ export async function rejectAndReassignPickTask(input: {
         return inv;
       });
 
-      const nextState: PersistedServerState = {
+      const nextState: PersistedServerState = bumpRevision({
         ...state,
         inventory: nextInventory,
         pickTasks: [
@@ -1392,8 +1581,8 @@ export async function rejectAndReassignPickTask(input: {
         ),
         inventoryMovements: [...movementsToAdd, ...state.inventoryMovements].slice(0, 250),
         activityLogs: [reassignActivity, rejectActivity, ...state.activityLogs].slice(0, 200),
-      };
-      persistToDisk(nextState);
+      });
+      await persistState(nextState);
 
       return {
         ok: true,
@@ -1433,7 +1622,7 @@ export async function rejectAndReassignPickTask(input: {
       return inv;
     });
 
-    const nextState: PersistedServerState = {
+    const nextState: PersistedServerState = bumpRevision({
       ...state,
       inventory: nextInventory,
       pickTasks: state.pickTasks.map((t) =>
@@ -1464,8 +1653,8 @@ export async function rejectAndReassignPickTask(input: {
       ),
       inventoryMovements: [...movementsToAdd, ...state.inventoryMovements].slice(0, 250),
       activityLogs: [exceptionActivity, ...state.activityLogs].slice(0, 200),
-    };
-    persistToDisk(nextState);
+    });
+    await persistState(nextState);
 
     return {
       ok: true,
@@ -1474,7 +1663,7 @@ export async function rejectAndReassignPickTask(input: {
       state: buildClientState(nextState, input.holderKey),
       data: { exception: true },
     };
-  });
+  }, input.fallbackState, input.holderKey);
 }
 
 export async function recordNetworkDemandSignal(input: {
@@ -1487,9 +1676,10 @@ export async function recordNetworkDemandSignal(input: {
   signalSource?: DemandSignalSource;
   registerInterestProductId?: string;
   session: AuthSession | null;
+  fallbackState?: CompactFallbackState;
 }): Promise<NetworkApiResponse> {
-  return withStateLock((current) => {
-    const { state } = sweepExpiredReservations(current, input.holderKey);
+  return withStateLock(async (current) => {
+    const { state } = await sweepExpiredReservations(current, input.holderKey);
     const cleanQuery = input.query.trim();
     if (!cleanQuery) {
       return {
@@ -1518,8 +1708,8 @@ export async function recordNetworkDemandSignal(input: {
         : state.registeredInterests;
 
     if (recentDuplicate) {
-      const updated = { ...state, registeredInterests };
-      persistToDisk(updated);
+      const updated = bumpRevision({ ...state, registeredInterests });
+      await persistState(updated);
       return {
         ok: true,
         status: 200,
@@ -1550,13 +1740,13 @@ export async function recordNetworkDemandSignal(input: {
       createdAt: nowIso,
     };
 
-    const nextState: PersistedServerState = {
+    const nextState: PersistedServerState = bumpRevision({
       ...state,
       registeredInterests,
       demandSignals: [signal, ...state.demandSignals].slice(0, 200),
       activityLogs: [activity, ...state.activityLogs].slice(0, 200),
-    };
-    persistToDisk(nextState);
+    });
+    await persistState(nextState);
 
     return {
       ok: true,
@@ -1564,7 +1754,7 @@ export async function recordNetworkDemandSignal(input: {
       message: 'Demand signal recorded.',
       state: buildClientState(nextState, input.holderKey),
     };
-  });
+  }, input.fallbackState, input.holderKey);
 }
 
 export async function createTransferRequest(input: {
@@ -1578,9 +1768,10 @@ export async function createTransferRequest(input: {
   requestedBy?: string;
   requestedByRole?: UserRole;
   actorUid?: string;
+  fallbackState?: CompactFallbackState;
 }): Promise<NetworkApiResponse<TransferRecommendation>> {
-  return withStateLock((current) => {
-    const { state } = sweepExpiredReservations(current, input.holderKey);
+  return withStateLock(async (current) => {
+    const { state } = await sweepExpiredReservations(current, input.holderKey);
 
     if (input.sourceStoreId === input.destinationStoreId) {
       return {
@@ -1682,12 +1873,12 @@ export async function createTransferRequest(input: {
       createdAt: nowIso,
     };
 
-    const nextState: PersistedServerState = {
+    const nextState: PersistedServerState = bumpRevision({
       ...state,
       transferRecommendations: [newRec, ...state.transferRecommendations],
       activityLogs: [activity, ...state.activityLogs].slice(0, 200),
-    };
-    persistToDisk(nextState);
+    });
+    await persistState(nextState);
 
     return {
       ok: true,
@@ -1696,7 +1887,7 @@ export async function createTransferRequest(input: {
       state: buildClientState(nextState, input.holderKey),
       data: newRec,
     };
-  });
+  }, input.fallbackState, input.holderKey);
 }
 
 export async function decideTransferRequest(input: {
@@ -1705,6 +1896,7 @@ export async function decideTransferRequest(input: {
   decision: 'APPROVED' | 'REJECTED';
   notes: string;
   session: AuthSession;
+  fallbackState?: CompactFallbackState;
 }): Promise<
   NetworkApiResponse<{
     recommendation: TransferRecommendation;
@@ -1712,8 +1904,8 @@ export async function decideTransferRequest(input: {
     movements: InventoryMovement[];
   }>
 > {
-  return withStateLock((current) => {
-    const { state } = sweepExpiredReservations(current, input.holderKey);
+  return withStateLock(async (current) => {
+    const { state } = await sweepExpiredReservations(current, input.holderKey);
 
     if (input.session.role !== 'NETWORK_ADMIN') {
       return {
@@ -1773,15 +1965,15 @@ export async function decideTransferRequest(input: {
         createdAt: nowIso,
       };
 
-      const nextState: PersistedServerState = {
+      const nextState: PersistedServerState = bumpRevision({
         ...state,
         transferRecommendations: state.transferRecommendations.map((r) =>
           r.id === rec.id ? updatedRec : r
         ),
         transferDecisions: [decisionRecord, ...state.transferDecisions],
         activityLogs: [activity, ...state.activityLogs].slice(0, 200),
-      };
-      persistToDisk(nextState);
+      });
+      await persistState(nextState);
 
       return {
         ok: true,
@@ -1892,7 +2084,7 @@ export async function decideTransferRequest(input: {
       createdAt: nowIso,
     };
 
-    const nextState: PersistedServerState = {
+    const nextState: PersistedServerState = bumpRevision({
       ...state,
       inventory: state.inventory.map((inv) => {
         if (inv.storeId === rec.sourceStoreId && inv.productId === rec.productId) {
@@ -1923,8 +2115,8 @@ export async function decideTransferRequest(input: {
       transferDecisions: [decisionRecord, ...state.transferDecisions],
       inventoryMovements: [inMovement, outMovement, ...state.inventoryMovements].slice(0, 250),
       activityLogs: [activity, ...state.activityLogs].slice(0, 200),
-    };
-    persistToDisk(nextState);
+    });
+    await persistState(nextState);
 
     return {
       ok: true,
@@ -1937,13 +2129,13 @@ export async function decideTransferRequest(input: {
         movements: [outMovement, inMovement],
       },
     };
-  });
+  }, input.fallbackState, input.holderKey);
 }
 
 export async function resetNetworkServerState(holderKey: string): Promise<NetworkApiResponse> {
-  return withStateLock(() => {
-    const fresh = toPersistedState(createSeededNetworkState());
-    persistToDisk(fresh);
+  return withStateLock(async () => {
+    const fresh = toPersistedState(createSeededNetworkState(), true);
+    await persistState(fresh);
     return {
       ok: true,
       status: 200,

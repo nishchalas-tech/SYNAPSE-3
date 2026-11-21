@@ -11,7 +11,7 @@ import type {
   Store,
   TransferDecision,
   TransferRecommendation,
-} from '../types';
+} from '../types/index.js';
 
 export const HERO_SHOWROOM_IMAGE = '/src/assets/images/hero_synapse_showroom_1795266015411.jpg';
 

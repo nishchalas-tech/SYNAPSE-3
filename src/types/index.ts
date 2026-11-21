@@ -312,6 +312,9 @@ export interface DynamicTransferSuggestion {
 }
 
 export interface NetworkState {
+  epochId?: string;
+  revision?: number;
+  explicitReset?: boolean;
   stores: Store[];
   products: Product[];
   inventory: InventoryRecord[];

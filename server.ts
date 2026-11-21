@@ -6,6 +6,7 @@ import {
   createTransferRequest,
   decideTransferRequest,
   getNetworkSnapshot,
+  hydrateNetworkServerState,
   placeNetworkOrder,
   recordNetworkDemandSignal,
   rejectAndReassignPickTask,
@@ -13,12 +14,12 @@ import {
   resetNetworkServerState,
   updateCartItemQty,
   verifyStoreInventory,
-} from './server/networkCore';
+} from './server/networkCore.js';
 import {
   executeVisualSearchRequest,
   getVisualSearchHealth,
   warmCatalogEmbeddingIndex,
-} from './server/visualSearchCore';
+} from './server/visualSearchCore.js';
 
 async function startServer() {
   const app = express();
@@ -38,6 +39,11 @@ async function startServer() {
   app.get('/api/network/state', async (req, res) => {
     const holderKey = typeof req.query.holderKey === 'string' ? req.query.holderKey : '';
     const result = await getNetworkSnapshot(holderKey);
+    res.status(result.status).json(result);
+  });
+
+  app.post('/api/network/hydrate', async (req, res) => {
+    const result = await hydrateNetworkServerState(req.body || {});
     res.status(result.status).json(result);
   });
 

@@ -162,12 +162,33 @@ function enrichWithDynamicSuggestions(raw: NetworkState): NetworkState {
   };
 }
 
+function buildCompactFallback(s: NetworkState) {
+  return {
+    epochId: s.epochId,
+    revision: s.revision,
+    inventory: s.inventory,
+    cart: s.cart,
+    orders: s.orders,
+    pickTasks: s.pickTasks,
+    verifications: s.verifications,
+    demandSignals: s.demandSignals,
+    transferRecommendations: s.transferRecommendations,
+    transferDecisions: s.transferDecisions,
+    inventoryMovements: s.inventoryMovements,
+    activityLogs: s.activityLogs,
+    registeredInterests: s.registeredInterests,
+  };
+}
+
 export function NetworkProvider({ children }: { children: React.ReactNode }) {
   const { session } = useAuth();
   const [guestKey] = useState<string>(() => getOrCreateGuestHolderKey());
   const holderKey = useMemo(() => session?.uid || guestKey, [session?.uid, guestKey]);
 
   const [state, setState] = useState<NetworkState>(() => enrichWithDynamicSuggestions(loadNetworkState()));
+  const stateRef = useRef<NetworkState>(state);
+  stateRef.current = state;
+
   const [expiredCartNotice, setExpiredCartNotice] = useState<string | null>(null);
   const lastSyncRef = useRef<number>(0);
 
@@ -176,6 +197,7 @@ export function NetworkProvider({ children }: { children: React.ReactNode }) {
   const applyServerState = useCallback(
     (nextRaw: NetworkState, expiredNotices?: string[]) => {
       const enriched = enrichWithDynamicSuggestions(nextRaw);
+      stateRef.current = enriched;
       setState(enriched);
       saveNetworkState(enriched);
       if (expiredNotices && expiredNotices.length > 0) {
@@ -193,11 +215,44 @@ export function NetworkProvider({ children }: { children: React.ReactNode }) {
         { cache: 'no-store' }
       );
       if (!response.ok) return;
+      const contentType = response.headers.get('content-type') || '';
+      if (!contentType.includes('application/json')) return;
       const payload = (await response.json()) as ServerApiPayload;
-      if (payload?.state) {
-        lastSyncRef.current = Date.now();
-        applyServerState(payload.state, payload.expiredNotices);
+      if (!payload?.state) return;
+
+      const serverState = payload.state;
+      const local = stateRef.current;
+      const localRev = local.revision || 1;
+      const serverRev = serverState.revision || 1;
+
+      const hitColdOrStaleLambda =
+        localRev > 1 &&
+        Boolean(local.epochId) &&
+        !serverState.explicitReset &&
+        ((serverState.epochId === local.epochId && serverRev < localRev) ||
+          (serverRev === 1 && serverState.epochId !== local.epochId));
+
+      if (hitColdOrStaleLambda) {
+        const hydrateRes = await fetch('/api/network/hydrate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            holderKey,
+            fallbackState: buildCompactFallback(local),
+          }),
+        });
+        if (hydrateRes.ok) {
+          const hydratedPayload = (await hydrateRes.json()) as ServerApiPayload;
+          if (hydratedPayload?.state) {
+            lastSyncRef.current = Date.now();
+            applyServerState(hydratedPayload.state, hydratedPayload.expiredNotices);
+          }
+        }
+        return;
       }
+
+      lastSyncRef.current = Date.now();
+      applyServerState(serverState, payload.expiredNotices);
     } catch {
       // Keep local state if transient network issue occurs
     }
@@ -205,11 +260,20 @@ export function NetworkProvider({ children }: { children: React.ReactNode }) {
 
   const postNetworkApi = useCallback(
     async <T,>(endpoint: string, body: Record<string, unknown>): Promise<ServerApiPayload<T>> => {
+      const includeFallback = endpoint !== '/api/network/reset';
       const response = await fetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...body, holderKey }),
+        body: JSON.stringify({
+          ...body,
+          holderKey,
+          ...(includeFallback ? { fallbackState: buildCompactFallback(stateRef.current) } : {}),
+        }),
       });
+      const contentType = response.headers.get('content-type') || '';
+      if (!contentType.includes('application/json')) {
+        throw new Error(`Network API returned HTTP ${response.status} (non-JSON response).`);
+      }
       const payload = (await response.json()) as ServerApiPayload<T>;
       if (payload?.state) {
         lastSyncRef.current = Date.now();
