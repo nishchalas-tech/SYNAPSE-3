@@ -1,0 +1,18 @@
+{
+  "functions": {
+    "api/visual-search.ts": {
+      "includeFiles": "src/assets/images/**",
+      "maxDuration": 30
+    }
+  },
+  "rewrites": [
+    {
+      "source": "/api/network/:path*",
+      "destination": "/api/network?action=:path*"
+    },
+    {
+      "source": "/((?!api/).*)",
+      "destination": "/index.html"
+    }
+  ]
+}

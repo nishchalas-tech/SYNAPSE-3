@@ -1,0 +1,516 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global Safety Net (Default Deny)
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Primitive Helpers ---
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isOwner(userId) {
+      return isSignedIn() && request.auth.uid == userId;
+    }
+
+    function isBootstrappedAdmin() {
+      return isVerified() && request.auth.token.email == 'nishchalas.official@gmail.com';
+    }
+
+    function isAdmin() {
+      return isVerified() && (
+        isBootstrappedAdmin() ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    function isStoreManagerOf(storeId) {
+      return isVerified() &&
+        exists(/databases/$(database)/documents/managers/$(request.auth.uid)) &&
+        get(/databases/$(database)/documents/managers/$(request.auth.uid)).data.storeId == storeId;
+    }
+
+    // --- Entity Validation Blueprints ---
+    function isValidUserProfile(data) {
+      return data.keys().hasAll(['uid', 'displayName', 'email', 'city', 'role', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['uid', 'displayName', 'email', 'city', 'preferredStoreId', 'role', 'createdAt', 'updatedAt']) &&
+        isValidId(data.uid) &&
+        data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 100 &&
+        data.email is string && data.email.size() >= 3 && data.email.size() <= 160 &&
+        data.city is string && data.city.size() >= 1 && data.city.size() <= 60 &&
+        (!('preferredStoreId' in data) || isValidId(data.preferredStoreId)) &&
+        data.role in ['CUSTOMER', 'STORE_MANAGER', 'NETWORK_ADMIN'] &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidCartItem(data) {
+      return data.keys().hasAll(['productId', 'storeId', 'quantity', 'fulfilmentPreference', 'addedAt', 'updatedAt']) &&
+        data.keys().hasOnly(['productId', 'storeId', 'quantity', 'fulfilmentPreference', 'addedAt', 'reservedAt', 'expiresAt', 'holdDurationMinutes', 'isTimedHold', 'isRenewable', 'demandLevel', 'updatedAt']) &&
+        isValidId(data.productId) &&
+        isValidId(data.storeId) &&
+        data.quantity is int && data.quantity >= 1 && data.quantity <= 20 &&
+        data.fulfilmentPreference in ['SAVE_MONEY', 'GET_IT_FASTER', 'SHOP_NEARBY'] &&
+        (!('holdDurationMinutes' in data) || (data.holdDurationMinutes is int && data.holdDurationMinutes >= 0 && data.holdDurationMinutes <= 10)) &&
+        (!('isTimedHold' in data) || data.isTimedHold is bool) &&
+        (!('isRenewable' in data) || data.isRenewable == false) &&
+        (!('demandLevel' in data) || data.demandLevel in ['NORMAL', 'ELEVATED', 'HIGH']) &&
+        (!('reservedAt' in data) || (data.reservedAt is string && data.reservedAt.size() <= 40)) &&
+        (!('expiresAt' in data) || data.expiresAt == null || (data.expiresAt is string && data.expiresAt.size() <= 40)) &&
+        data.addedAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidStore(data) {
+      return data.keys().hasAll(['id', 'name', 'locality', 'city', 'address', 'distanceKm', 'fulfilmentHours', 'deliveryFeeInr', 'isOpen']) &&
+        data.keys().hasOnly(['id', 'name', 'locality', 'city', 'address', 'distanceKm', 'fulfilmentHours', 'deliveryFeeInr', 'isOpen']) &&
+        isValidId(data.id) &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 100 &&
+        data.locality is string && data.locality.size() >= 1 && data.locality.size() <= 80 &&
+        data.city is string && data.city.size() >= 1 && data.city.size() <= 60 &&
+        data.address is string && data.address.size() >= 1 && data.address.size() <= 200 &&
+        data.distanceKm is number && data.distanceKm >= 0 &&
+        data.fulfilmentHours is number && data.fulfilmentHours >= 0 &&
+        data.deliveryFeeInr is number && data.deliveryFeeInr >= 0 &&
+        data.isOpen is bool;
+    }
+
+    function isValidProduct(data) {
+      return data.keys().hasAll(['id', 'sku', 'name', 'brand', 'category', 'priceInr', 'description', 'imageUrl', 'compatibilityGroup']) &&
+        data.keys().hasOnly(['id', 'sku', 'name', 'brand', 'category', 'priceInr', 'description', 'imageUrl', 'compatibilityGroup', 'tags']) &&
+        isValidId(data.id) &&
+        data.sku is string && data.sku.size() >= 1 && data.sku.size() <= 40 &&
+        data.name is string && data.name.size() >= 1 && data.name.size() <= 140 &&
+        data.brand is string && data.brand.size() >= 1 && data.brand.size() <= 60 &&
+        data.category in ['Laptops', 'Monitors', 'Keyboards', 'Mice', 'Headphones'] &&
+        data.priceInr is number && data.priceInr > 0 &&
+        data.description is string && data.description.size() >= 1 && data.description.size() <= 600 &&
+        data.imageUrl is string && data.imageUrl.size() >= 1 && data.imageUrl.size() <= 260 &&
+        data.compatibilityGroup is string && data.compatibilityGroup.size() >= 1 && data.compatibilityGroup.size() <= 80 &&
+        (!('tags' in data) || (data.tags is list && data.tags.size() <= 10 && (data.tags.size() == 0 || data.tags[0] is string)));
+    }
+
+    function isValidInventory(data) {
+      return data.keys().hasAll(['id', 'storeId', 'productId', 'recordedQty', 'verifiedQty', 'reservedQty', 'sellableQty', 'safetyBuffer', 'lastVerifiedAt', 'lastVerifiedBy', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'storeId', 'productId', 'recordedQty', 'verifiedQty', 'reservedQty', 'cartHoldQty', 'sellableQty', 'safetyBuffer', 'lastVerifiedAt', 'lastVerifiedBy', 'discrepancyReason', 'updatedAt']) &&
+        isValidId(data.id) &&
+        isValidId(data.storeId) &&
+        isValidId(data.productId) &&
+        data.recordedQty is int && data.recordedQty >= 0 &&
+        data.verifiedQty is int && data.verifiedQty >= 0 &&
+        data.reservedQty is int && data.reservedQty >= 0 &&
+        (!('cartHoldQty' in data) || (data.cartHoldQty is int && data.cartHoldQty >= 0)) &&
+        data.sellableQty is int && data.sellableQty >= 0 &&
+        data.safetyBuffer is int && data.safetyBuffer >= 0 &&
+        data.lastVerifiedAt is string && data.lastVerifiedAt.size() <= 40 &&
+        data.lastVerifiedBy is string && data.lastVerifiedBy.size() <= 120 &&
+        (!('discrepancyReason' in data) || (data.discrepancyReason is string && data.discrepancyReason.size() <= 240)) &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidOrder(data) {
+      return data.keys().hasAll(['id', 'orderNumber', 'customerId', 'customerName', 'customerEmail', 'shippingAddress', 'city', 'storeId', 'storeName', 'fulfilmentPreference', 'status', 'subtotalInr', 'deliveryFeeInr', 'totalInr', 'items', 'timeline', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'orderNumber', 'customerId', 'customerName', 'customerEmail', 'customerPhone', 'shippingAddress', 'city', 'storeId', 'storeName', 'fulfilmentPreference', 'fulfilmentNote', 'status', 'subtotalInr', 'deliveryFeeInr', 'totalInr', 'items', 'timeline', 'createdAt', 'updatedAt']) &&
+        isValidId(data.id) &&
+        data.orderNumber is string && data.orderNumber.size() >= 3 && data.orderNumber.size() <= 32 &&
+        isValidId(data.customerId) &&
+        data.customerName is string && data.customerName.size() >= 1 && data.customerName.size() <= 100 &&
+        data.customerEmail is string && data.customerEmail.size() >= 3 && data.customerEmail.size() <= 160 &&
+        (!('customerPhone' in data) || (data.customerPhone is string && data.customerPhone.size() <= 30)) &&
+        data.shippingAddress is string && data.shippingAddress.size() >= 4 && data.shippingAddress.size() <= 260 &&
+        data.city is string && data.city.size() >= 2 && data.city.size() <= 60 &&
+        isValidId(data.storeId) &&
+        data.storeName is string && data.storeName.size() >= 1 && data.storeName.size() <= 100 &&
+        data.fulfilmentPreference in ['SAVE_MONEY', 'GET_IT_FASTER', 'SHOP_NEARBY'] &&
+        (!('fulfilmentNote' in data) || (data.fulfilmentNote is string && data.fulfilmentNote.size() <= 260)) &&
+        data.status in ['CONFIRMED', 'PICK_PENDING', 'READY_FOR_DISPATCH', 'REASSIGNED', 'EXCEPTION', 'COMPLETED'] &&
+        data.subtotalInr is number && data.subtotalInr >= 0 &&
+        data.deliveryFeeInr is number && data.deliveryFeeInr >= 0 &&
+        data.totalInr is number && data.totalInr >= 0 &&
+        data.items is list && data.items.size() >= 1 && data.items.size() <= 20 && data.items[0] is map &&
+        data.timeline is list && data.timeline.size() >= 1 && data.timeline.size() <= 20 && data.timeline[0] is map &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidPickTask(data) {
+      return data.keys().hasAll(['id', 'orderId', 'orderNumber', 'customerId', 'storeId', 'storeName', 'productId', 'productName', 'quantity', 'status', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'orderId', 'orderNumber', 'customerId', 'assignedManagerUid', 'storeId', 'storeName', 'productId', 'productName', 'quantity', 'status', 'rejectionReason', 'reassignedFromStoreId', 'createdAt', 'updatedAt']) &&
+        isValidId(data.id) &&
+        isValidId(data.orderId) &&
+        data.orderNumber is string && data.orderNumber.size() <= 32 &&
+        isValidId(data.customerId) &&
+        (!('assignedManagerUid' in data) || isValidId(data.assignedManagerUid)) &&
+        isValidId(data.storeId) &&
+        data.storeName is string && data.storeName.size() <= 100 &&
+        isValidId(data.productId) &&
+        data.productName is string && data.productName.size() <= 140 &&
+        data.quantity is int && data.quantity >= 1 && data.quantity <= 20 &&
+        data.status in ['PENDING', 'ACCEPTED', 'REJECTED', 'REASSIGNED', 'EXCEPTION'] &&
+        (!('rejectionReason' in data) || (data.rejectionReason is string && data.rejectionReason.size() <= 240)) &&
+        (!('reassignedFromStoreId' in data) || isValidId(data.reassignedFromStoreId)) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidVerification(data) {
+      return data.keys().hasAll(['id', 'storeId', 'productId', 'productName', 'recordedQty', 'verifiedQty', 'previousSellableQty', 'newSellableQty', 'discrepancyDelta', 'verifiedBy', 'verifiedByUid', 'createdAt']) &&
+        data.keys().hasOnly(['id', 'storeId', 'productId', 'productName', 'recordedQty', 'verifiedQty', 'previousSellableQty', 'newSellableQty', 'discrepancyDelta', 'discrepancyReason', 'verifiedBy', 'verifiedByUid', 'createdAt']) &&
+        isValidId(data.id) &&
+        isValidId(data.storeId) &&
+        isValidId(data.productId) &&
+        data.productName is string && data.productName.size() <= 140 &&
+        data.recordedQty is int && data.recordedQty >= 0 &&
+        data.verifiedQty is int && data.verifiedQty >= 0 &&
+        data.previousSellableQty is int && data.previousSellableQty >= 0 &&
+        data.newSellableQty is int && data.newSellableQty >= 0 &&
+        data.discrepancyDelta is int &&
+        (!('discrepancyReason' in data) || (data.discrepancyReason is string && data.discrepancyReason.size() <= 240)) &&
+        data.verifiedBy is string && data.verifiedBy.size() <= 120 &&
+        isValidId(data.verifiedByUid) &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidDemandSignal(data) {
+      return data.keys().hasAll(['id', 'userId', 'query', 'inferredCategory', 'locality', 'outcome', 'createdAt']) &&
+        data.keys().hasOnly(['id', 'userId', 'query', 'inferredCategory', 'inferredProductId', 'locality', 'outcome', 'signalSource', 'createdAt']) &&
+        isValidId(data.id) &&
+        isValidId(data.userId) &&
+        data.query is string && data.query.size() >= 1 && data.query.size() <= 140 &&
+        data.inferredCategory is string && data.inferredCategory.size() >= 1 && data.inferredCategory.size() <= 60 &&
+        (!('inferredProductId' in data) || isValidId(data.inferredProductId)) &&
+        data.locality is string && data.locality.size() >= 1 && data.locality.size() <= 80 &&
+        data.outcome in ['UNMATCHED_SEARCH', 'OUT_OF_STOCK_NEARBY', 'REGISTERED_INTEREST', 'RESCUED_ALTERNATIVE'] &&
+        (!('signalSource' in data) || data.signalSource in ['TEXT_SEARCH', 'VISUAL_SEARCH', 'PRODUCT_VIEW', 'RESCUE_REGISTER']) &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidTransferRecommendation(data) {
+      return data.keys().hasAll(['id', 'sourceStoreId', 'sourceStoreName', 'destinationStoreId', 'destinationStoreName', 'productId', 'productName', 'recommendedQty', 'reason', 'sourceSellableQty', 'destinationSellableQty', 'demandSignalCount', 'status', 'createdAt', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'sourceStoreId', 'sourceStoreName', 'destinationStoreId', 'destinationStoreName', 'productId', 'productName', 'recommendedQty', 'reason', 'sourceSellableQty', 'destinationSellableQty', 'demandSignalCount', 'status', 'requestedBy', 'requestedByRole', 'createdAt', 'updatedAt']) &&
+        isValidId(data.id) &&
+        isValidId(data.sourceStoreId) &&
+        data.sourceStoreName is string && data.sourceStoreName.size() <= 100 &&
+        isValidId(data.destinationStoreId) &&
+        data.destinationStoreName is string && data.destinationStoreName.size() <= 100 &&
+        isValidId(data.productId) &&
+        data.productName is string && data.productName.size() <= 140 &&
+        data.recommendedQty is int && data.recommendedQty >= 1 &&
+        data.reason is string && data.reason.size() <= 300 &&
+        data.sourceSellableQty is int && data.sourceSellableQty >= 0 &&
+        data.destinationSellableQty is int && data.destinationSellableQty >= 0 &&
+        data.demandSignalCount is int && data.demandSignalCount >= 0 &&
+        data.status in ['PENDING', 'APPROVED', 'REJECTED'] &&
+        (!('requestedBy' in data) || (data.requestedBy is string && data.requestedBy.size() <= 120)) &&
+        (!('requestedByRole' in data) || data.requestedByRole in ['CUSTOMER', 'STORE_MANAGER', 'NETWORK_ADMIN']) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidTransferDecision(data) {
+      return data.keys().hasAll(['id', 'recommendationId', 'sourceStoreId', 'destinationStoreId', 'productId', 'productName', 'quantity', 'decision', 'decidedBy', 'createdAt']) &&
+        data.keys().hasOnly(['id', 'recommendationId', 'sourceStoreId', 'destinationStoreId', 'productId', 'productName', 'quantity', 'decision', 'notes', 'decidedBy', 'createdAt']) &&
+        isValidId(data.id) &&
+        isValidId(data.recommendationId) &&
+        isValidId(data.sourceStoreId) &&
+        isValidId(data.destinationStoreId) &&
+        isValidId(data.productId) &&
+        data.productName is string && data.productName.size() <= 140 &&
+        data.quantity is int && data.quantity >= 1 &&
+        data.decision in ['APPROVED', 'REJECTED'] &&
+        (!('notes' in data) || (data.notes is string && data.notes.size() <= 260)) &&
+        data.decidedBy is string && data.decidedBy.size() <= 120 &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidActivityLog(data) {
+      return data.keys().hasAll(['id', 'actorUid', 'actorRole', 'actorName', 'eventType', 'summary', 'createdAt']) &&
+        data.keys().hasOnly(['id', 'actorUid', 'actorRole', 'actorName', 'eventType', 'storeId', 'summary', 'createdAt']) &&
+        isValidId(data.id) &&
+        isValidId(data.actorUid) &&
+        data.actorRole in ['CUSTOMER', 'STORE_MANAGER', 'NETWORK_ADMIN'] &&
+        data.actorName is string && data.actorName.size() <= 100 &&
+        data.eventType is string && data.eventType.size() <= 60 &&
+        (!('storeId' in data) || isValidId(data.storeId)) &&
+        data.summary is string && data.summary.size() <= 300 &&
+        data.createdAt is timestamp;
+    }
+
+    function isValidInventoryMovement(data) {
+      return data.keys().hasAll([
+          'id', 'movementType', 'storeId', 'storeName', 'productId', 'productName',
+          'quantityDelta', 'beforeVerifiedQty', 'afterVerifiedQty',
+          'beforeSellableQty', 'afterSellableQty', 'referenceId', 'notes',
+          'actorName', 'actorRole', 'createdAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'movementType', 'storeId', 'storeName', 'productId', 'productName',
+          'quantityDelta', 'beforeVerifiedQty', 'afterVerifiedQty',
+          'beforeSellableQty', 'afterSellableQty', 'referenceId', 'notes',
+          'actorName', 'actorRole', 'createdAt'
+        ]) &&
+        isValidId(data.id) &&
+        data.movementType in [
+          'TRANSFER_OUT', 'TRANSFER_IN', 'CART_HOLD_LOCK', 'CART_HOLD_RELEASE',
+          'CART_HOLD_EXPIRED', 'ORDER_RESERVATION', 'PICK_RELEASE',
+          'PICK_REASSIGN_RESERVE', 'STOCK_VERIFICATION'
+        ] &&
+        isValidId(data.storeId) &&
+        data.storeName is string && data.storeName.size() <= 100 &&
+        isValidId(data.productId) &&
+        data.productName is string && data.productName.size() <= 140 &&
+        data.quantityDelta is int &&
+        data.beforeVerifiedQty is int && data.beforeVerifiedQty >= 0 &&
+        data.afterVerifiedQty is int && data.afterVerifiedQty >= 0 &&
+        data.beforeSellableQty is int && data.beforeSellableQty >= 0 &&
+        data.afterSellableQty is int && data.afterSellableQty >= 0 &&
+        data.referenceId is string && data.referenceId.size() <= 64 &&
+        data.notes is string && data.notes.size() <= 300 &&
+        data.actorName is string && data.actorName.size() <= 100 &&
+        data.actorRole in ['CUSTOMER', 'STORE_MANAGER', 'NETWORK_ADMIN'] &&
+        data.createdAt is timestamp;
+    }
+
+    // --- Collection Rules ---
+
+    match /admins/{uid} {
+      allow get: if isValidId(uid) && (isOwner(uid) || isAdmin());
+      allow list: if isBootstrappedAdmin();
+      allow create, update, delete: if isValidId(uid) && isAdmin();
+    }
+
+    match /managers/{uid} {
+      allow get: if isValidId(uid) && (isOwner(uid) || isAdmin());
+      allow list: if isBootstrappedAdmin();
+      allow create, update, delete: if isValidId(uid) && isAdmin();
+    }
+
+    match /users/{userId} {
+      allow get: if isValidId(userId) && (isOwner(userId) || isAdmin());
+      allow list: if isBootstrappedAdmin();
+      allow create: if isValidId(userId) && isVerified() &&
+        isValidUserProfile(incoming()) &&
+        incoming().uid == request.auth.uid &&
+        userId == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        (incoming().role == 'CUSTOMER' || isAdmin());
+      allow update: if isValidId(userId) && isVerified() &&
+        isValidUserProfile(incoming()) &&
+        incoming().uid == existing().uid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (
+          isAdmin() ||
+          (isOwner(userId) && incoming().role == existing().role &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['displayName', 'city', 'preferredStoreId', 'updatedAt']))
+        );
+      allow delete: if isValidId(userId) && isAdmin();
+
+      match /cart/{itemId} {
+        allow get: if isValidId(userId) && isValidId(itemId) && isOwner(userId) &&
+          exists(/databases/$(database)/documents/users/$(userId));
+        allow list: if isOwner(userId);
+        allow create: if isValidId(userId) && isValidId(itemId) && isVerified() && isOwner(userId) &&
+          exists(/databases/$(database)/documents/users/$(userId)) &&
+          isValidCartItem(incoming()) &&
+          incoming().addedAt == request.time &&
+          incoming().updatedAt == request.time;
+        allow update: if isValidId(userId) && isValidId(itemId) && isVerified() && isOwner(userId) &&
+          exists(/databases/$(database)/documents/users/$(userId)) &&
+          isValidCartItem(incoming()) &&
+          incoming().addedAt == existing().addedAt &&
+          incoming().updatedAt == request.time &&
+          incoming().diff(existing()).affectedKeys().hasOnly(['quantity', 'storeId', 'fulfilmentPreference', 'updatedAt']);
+        allow delete: if isValidId(userId) && isValidId(itemId) && isOwner(userId);
+      }
+    }
+
+    match /stores/{storeId} {
+      allow get: if isValidId(storeId) && isSignedIn();
+      allow list: if isSignedIn();
+      allow create, update: if isValidId(storeId) && isAdmin() && isValidStore(incoming());
+      allow delete: if isValidId(storeId) && isAdmin();
+    }
+
+    match /products/{productId} {
+      allow get: if isValidId(productId) && isSignedIn();
+      allow list: if isSignedIn();
+      allow create, update: if isValidId(productId) && isAdmin() && isValidProduct(incoming());
+      allow delete: if isValidId(productId) && isAdmin();
+    }
+
+    match /inventory/{inventoryId} {
+      allow get: if isValidId(inventoryId) && isSignedIn();
+      allow list: if isSignedIn();
+      allow create: if isValidId(inventoryId) && isAdmin() &&
+        isValidInventory(incoming()) &&
+        incoming().updatedAt == request.time &&
+        exists(/databases/$(database)/documents/stores/$(incoming().storeId)) &&
+        exists(/databases/$(database)/documents/products/$(incoming().productId));
+      allow update: if isValidId(inventoryId) && isVerified() &&
+        isValidInventory(incoming()) &&
+        incoming().id == existing().id &&
+        incoming().storeId == existing().storeId &&
+        incoming().productId == existing().productId &&
+        incoming().updatedAt == request.time &&
+        (
+          isAdmin() ||
+          (isStoreManagerOf(existing().storeId) &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'verifiedQty', 'sellableQty', 'lastVerifiedAt', 'lastVerifiedBy', 'discrepancyReason', 'updatedAt'
+            ]))
+        );
+      allow delete: if isValidId(inventoryId) && isAdmin();
+    }
+
+    match /orders/{orderId} {
+      allow get: if isValidId(orderId) && isSignedIn() && (
+        existing().customerId == request.auth.uid ||
+        isAdmin() ||
+        isStoreManagerOf(existing().storeId)
+      );
+      allow list: if isSignedIn() && (
+        resource.data.customerId == request.auth.uid ||
+        isBootstrappedAdmin()
+      );
+      allow create: if isValidId(orderId) && isVerified() &&
+        isValidOrder(incoming()) &&
+        incoming().customerId == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        exists(/databases/$(database)/documents/stores/$(incoming().storeId));
+      allow update: if isValidId(orderId) && isVerified() &&
+        isValidOrder(incoming()) &&
+        incoming().id == existing().id &&
+        incoming().customerId == existing().customerId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (
+          isAdmin() ||
+          (existing().status != 'COMPLETED' &&
+            isStoreManagerOf(existing().storeId) &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'storeId', 'storeName', 'fulfilmentNote', 'timeline', 'updatedAt']))
+        );
+      allow delete: if isValidId(orderId) && isAdmin();
+    }
+
+    match /pickTasks/{taskId} {
+      allow get: if isValidId(taskId) && isVerified() && (isAdmin() || isStoreManagerOf(existing().storeId) || existing().customerId == request.auth.uid);
+      allow list: if isVerified() && (
+        resource.data.customerId == request.auth.uid ||
+        resource.data.assignedManagerUid == request.auth.uid ||
+        isBootstrappedAdmin()
+      );
+      allow create: if isValidId(taskId) && isVerified() &&
+        isValidPickTask(incoming()) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        exists(/databases/$(database)/documents/orders/$(incoming().orderId)) &&
+        (isAdmin() || get(/databases/$(database)/documents/orders/$(incoming().orderId)).data.customerId == request.auth.uid);
+      allow update: if isValidId(taskId) && isVerified() &&
+        isValidPickTask(incoming()) &&
+        incoming().id == existing().id &&
+        incoming().orderId == existing().orderId &&
+        incoming().customerId == existing().customerId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (
+          isAdmin() ||
+          (existing().status == 'PENDING' &&
+            isStoreManagerOf(existing().storeId) &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['status', 'rejectionReason', 'storeId', 'storeName', 'reassignedFromStoreId', 'updatedAt']))
+        );
+      allow delete: if isValidId(taskId) && isAdmin();
+    }
+
+    match /verifications/{verificationId} {
+      allow get: if isValidId(verificationId) && isVerified() && (isAdmin() || isStoreManagerOf(existing().storeId));
+      allow list: if isVerified() && (
+        resource.data.verifiedByUid == request.auth.uid ||
+        isBootstrappedAdmin()
+      );
+      allow create: if isValidId(verificationId) && isVerified() &&
+        isValidVerification(incoming()) &&
+        incoming().verifiedByUid == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        (isAdmin() || isStoreManagerOf(incoming().storeId));
+      allow update, delete: if isValidId(verificationId) && isAdmin();
+    }
+
+    match /demandSignals/{signalId} {
+      allow get: if isValidId(signalId) && isSignedIn() && (existing().userId == request.auth.uid || isAdmin());
+      allow list: if isSignedIn() && (resource.data.userId == request.auth.uid || isBootstrappedAdmin());
+      allow create: if isValidId(signalId) && isVerified() &&
+        isValidDemandSignal(incoming()) &&
+        incoming().userId == request.auth.uid &&
+        incoming().createdAt == request.time;
+      allow update, delete: if isValidId(signalId) && isAdmin();
+    }
+
+    match /transferRecommendations/{recId} {
+      allow get: if isValidId(recId) && isAdmin();
+      allow list: if isBootstrappedAdmin();
+      allow create: if isValidId(recId) && isAdmin() &&
+        isValidTransferRecommendation(incoming()) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+      allow update: if isValidId(recId) && isAdmin() &&
+        isValidTransferRecommendation(incoming()) &&
+        incoming().id == existing().id &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt']);
+      allow delete: if isValidId(recId) && isAdmin();
+    }
+
+    match /transferDecisions/{decId} {
+      allow get: if isValidId(decId) && isAdmin();
+      allow list: if isBootstrappedAdmin();
+      allow create: if isValidId(decId) && isAdmin() &&
+        isValidTransferDecision(incoming()) &&
+        incoming().createdAt == request.time &&
+        exists(/databases/$(database)/documents/transferRecommendations/$(incoming().recommendationId));
+      allow update, delete: if isValidId(decId) && isAdmin();
+    }
+
+    match /activityLogs/{logId} {
+      allow get: if isValidId(logId) && isVerified() && (existing().actorUid == request.auth.uid || isAdmin());
+      allow list: if isVerified() && (resource.data.actorUid == request.auth.uid || isBootstrappedAdmin());
+      allow create: if isValidId(logId) && isVerified() &&
+        isValidActivityLog(incoming()) &&
+        incoming().actorUid == request.auth.uid &&
+        incoming().createdAt == request.time;
+      allow update, delete: if isValidId(logId) && isAdmin();
+    }
+
+    match /inventoryMovements/{movementId} {
+      allow get: if isValidId(movementId) && isVerified() && (isAdmin() || isStoreManagerOf(existing().storeId));
+      allow list: if isVerified() && isBootstrappedAdmin();
+      allow create: if isValidId(movementId) && isVerified() &&
+        isValidInventoryMovement(incoming()) &&
+        incoming().createdAt == request.time &&
+        (isAdmin() || isStoreManagerOf(incoming().storeId));
+      allow update, delete: if false;
+    }
+  }
+}

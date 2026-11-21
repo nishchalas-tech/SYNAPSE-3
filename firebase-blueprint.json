@@ -1,0 +1,323 @@
+{
+  "entities": {
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Private authenticated user profile and retail preferences",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "displayName": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "email": { "type": "string", "format": "email", "maxLength": 160 },
+        "city": { "type": "string", "minLength": 1, "maxLength": 60 },
+        "preferredStoreId": { "type": "string", "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "role": { "type": "string", "enum": ["CUSTOMER", "STORE_MANAGER", "NETWORK_ADMIN"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["uid", "displayName", "email", "city", "role", "createdAt", "updatedAt"]
+    },
+    "CartItem": {
+      "title": "CartItem",
+      "description": "Customer shopping cart line item bound to selected fulfilment store",
+      "type": "object",
+      "properties": {
+        "productId": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "storeId": { "type": "string", "minLength": 1, "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "quantity": { "type": "integer" },
+        "fulfilmentPreference": { "type": "string", "enum": ["SAVE_MONEY", "GET_IT_FASTER", "SHOP_NEARBY"] },
+        "addedAt": { "type": "string", "format": "date-time" },
+        "reservedAt": { "type": "string", "format": "date-time" },
+        "expiresAt": { "type": "string", "format": "date-time" },
+        "holdDurationMinutes": { "type": "integer" },
+        "isTimedHold": { "type": "boolean" },
+        "isRenewable": { "type": "boolean" },
+        "demandLevel": { "type": "string", "enum": ["NORMAL", "ELEVATED", "HIGH"] },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["productId", "storeId", "quantity", "fulfilmentPreference", "addedAt", "updatedAt"]
+    },
+    "Store": {
+      "title": "Store",
+      "description": "Physical retail store node in the SYNAPSE Bengaluru network",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "name": { "type": "string", "maxLength": 100 },
+        "locality": { "type": "string", "maxLength": 80 },
+        "city": { "type": "string", "maxLength": 60 },
+        "address": { "type": "string", "maxLength": 200 },
+        "distanceKm": { "type": "number" },
+        "fulfilmentHours": { "type": "number" },
+        "deliveryFeeInr": { "type": "number" },
+        "isOpen": { "type": "boolean" }
+      },
+      "required": ["id", "name", "locality", "city", "address", "distanceKm", "fulfilmentHours", "deliveryFeeInr", "isOpen"]
+    },
+    "Product": {
+      "title": "Product",
+      "description": "Electronics retail catalog product with specs and compatibility attributes",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "sku": { "type": "string", "maxLength": 40 },
+        "name": { "type": "string", "maxLength": 140 },
+        "brand": { "type": "string", "maxLength": 60 },
+        "category": { "type": "string", "enum": ["Laptops", "Monitors", "Keyboards", "Mice", "Headphones"] },
+        "priceInr": { "type": "number" },
+        "description": { "type": "string", "maxLength": 600 },
+        "imageUrl": { "type": "string", "maxLength": 260 },
+        "compatibilityGroup": { "type": "string", "maxLength": 80 },
+        "tags": { "type": "array" }
+      },
+      "required": ["id", "sku", "name", "brand", "category", "priceInr", "description", "imageUrl", "compatibilityGroup"]
+    },
+    "InventoryRecord": {
+      "title": "InventoryRecord",
+      "description": "Store-product inventory record distinguishing recorded, verified, reserved, and sellable stock",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "storeId": { "type": "string", "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "productId": { "type": "string", "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "recordedQty": { "type": "integer" },
+        "verifiedQty": { "type": "integer" },
+        "reservedQty": { "type": "integer" },
+        "cartHoldQty": { "type": "integer" },
+        "sellableQty": { "type": "integer" },
+        "safetyBuffer": { "type": "integer" },
+        "lastVerifiedAt": { "type": "string", "maxLength": 40 },
+        "lastVerifiedBy": { "type": "string", "maxLength": 120 },
+        "discrepancyReason": { "type": "string", "maxLength": 240 },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "storeId", "productId", "recordedQty", "verifiedQty", "reservedQty", "sellableQty", "safetyBuffer", "lastVerifiedAt", "lastVerifiedBy", "updatedAt"]
+    },
+    "Order": {
+      "title": "Order",
+      "description": "Customer demo order fulfilled by an assigned store node",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "orderNumber": { "type": "string", "maxLength": 32 },
+        "customerId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "customerName": { "type": "string", "maxLength": 100 },
+        "customerEmail": { "type": "string", "maxLength": 160 },
+        "customerPhone": { "type": "string", "maxLength": 30 },
+        "shippingAddress": { "type": "string", "maxLength": 260 },
+        "city": { "type": "string", "maxLength": 60 },
+        "storeId": { "type": "string", "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "storeName": { "type": "string", "maxLength": 100 },
+        "fulfilmentPreference": { "type": "string", "enum": ["SAVE_MONEY", "GET_IT_FASTER", "SHOP_NEARBY"] },
+        "fulfilmentNote": { "type": "string", "maxLength": 260 },
+        "status": { "type": "string", "enum": ["CONFIRMED", "PICK_PENDING", "READY_FOR_DISPATCH", "REASSIGNED", "EXCEPTION", "COMPLETED"] },
+        "subtotalInr": { "type": "number" },
+        "deliveryFeeInr": { "type": "number" },
+        "totalInr": { "type": "number" },
+        "items": { "type": "array" },
+        "timeline": { "type": "array" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "orderNumber", "customerId", "customerName", "customerEmail", "shippingAddress", "city", "storeId", "storeName", "fulfilmentPreference", "status", "subtotalInr", "deliveryFeeInr", "totalInr", "items", "timeline", "createdAt", "updatedAt"]
+    },
+    "PickTask": {
+      "title": "PickTask",
+      "description": "Store manager fulfilment pick task tied to an order",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "orderId": { "type": "string", "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "orderNumber": { "type": "string", "maxLength": 32 },
+        "customerId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "assignedManagerUid": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "storeId": { "type": "string", "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "storeName": { "type": "string", "maxLength": 100 },
+        "productId": { "type": "string", "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "productName": { "type": "string", "maxLength": 140 },
+        "quantity": { "type": "integer" },
+        "status": { "type": "string", "enum": ["PENDING", "ACCEPTED", "REJECTED", "REASSIGNED", "EXCEPTION"] },
+        "rejectionReason": { "type": "string", "maxLength": 240 },
+        "reassignedFromStoreId": { "type": "string", "maxLength": 64 },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "orderId", "orderNumber", "customerId", "storeId", "storeName", "productId", "productName", "quantity", "status", "createdAt", "updatedAt"]
+    },
+    "StockVerification": {
+      "title": "StockVerification",
+      "description": "Stock Whisperer physical count submission and discrepancy record",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "storeId": { "type": "string", "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "productId": { "type": "string", "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "productName": { "type": "string", "maxLength": 140 },
+        "recordedQty": { "type": "integer" },
+        "verifiedQty": { "type": "integer" },
+        "previousSellableQty": { "type": "integer" },
+        "newSellableQty": { "type": "integer" },
+        "discrepancyDelta": { "type": "integer" },
+        "discrepancyReason": { "type": "string", "maxLength": 240 },
+        "verifiedBy": { "type": "string", "maxLength": 120 },
+        "verifiedByUid": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "storeId", "productId", "productName", "recordedQty", "verifiedQty", "previousSellableQty", "newSellableQty", "discrepancyDelta", "verifiedBy", "verifiedByUid", "createdAt"]
+    },
+    "DemandSignal": {
+      "title": "DemandSignal",
+      "description": "Unmatched or rescue-triggered search interest signal for Demand Radar",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "userId": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "query": { "type": "string", "minLength": 1, "maxLength": 140 },
+        "inferredCategory": { "type": "string", "maxLength": 60 },
+        "inferredProductId": { "type": "string", "maxLength": 64 },
+        "locality": { "type": "string", "maxLength": 80 },
+        "outcome": { "type": "string", "enum": ["UNMATCHED_SEARCH", "OUT_OF_STOCK_NEARBY", "REGISTERED_INTEREST", "RESCUED_ALTERNATIVE"] },
+        "signalSource": { "type": "string", "enum": ["TEXT_SEARCH", "VISUAL_SEARCH", "PRODUCT_VIEW", "RESCUE_REGISTER"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "userId", "query", "inferredCategory", "locality", "outcome", "createdAt"]
+    },
+    "TransferRecommendation": {
+      "title": "TransferRecommendation",
+      "description": "Surplus Exchange inter-store rebalancing recommendation",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "sourceStoreId": { "type": "string", "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "sourceStoreName": { "type": "string", "maxLength": 100 },
+        "destinationStoreId": { "type": "string", "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "destinationStoreName": { "type": "string", "maxLength": 100 },
+        "productId": { "type": "string", "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "productName": { "type": "string", "maxLength": 140 },
+        "recommendedQty": { "type": "integer" },
+        "reason": { "type": "string", "maxLength": 300 },
+        "sourceSellableQty": { "type": "integer" },
+        "destinationSellableQty": { "type": "integer" },
+        "demandSignalCount": { "type": "integer" },
+        "status": { "type": "string", "enum": ["PENDING", "APPROVED", "REJECTED"] },
+        "requestedBy": { "type": "string", "maxLength": 120 },
+        "requestedByRole": { "type": "string", "enum": ["CUSTOMER", "STORE_MANAGER", "NETWORK_ADMIN"] },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "sourceStoreId", "sourceStoreName", "destinationStoreId", "destinationStoreName", "productId", "productName", "recommendedQty", "reason", "sourceSellableQty", "destinationSellableQty", "demandSignalCount", "status", "createdAt", "updatedAt"]
+    },
+    "TransferDecision": {
+      "title": "TransferDecision",
+      "description": "Recorded administrator decision on a Surplus Exchange recommendation",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "recommendationId": { "type": "string", "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "sourceStoreId": { "type": "string", "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "destinationStoreId": { "type": "string", "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "productId": { "type": "string", "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "productName": { "type": "string", "maxLength": 140 },
+        "quantity": { "type": "integer" },
+        "decision": { "type": "string", "enum": ["APPROVED", "REJECTED"] },
+        "notes": { "type": "string", "maxLength": 260 },
+        "decidedBy": { "type": "string", "maxLength": 120 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "recommendationId", "sourceStoreId", "destinationStoreId", "productId", "productName", "quantity", "decision", "decidedBy", "createdAt"]
+    },
+    "NetworkActivity": {
+      "title": "NetworkActivity",
+      "description": "Audit log of cross-portal demo network events",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "actorUid": { "type": "string", "maxLength": 128, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "actorRole": { "type": "string", "enum": ["CUSTOMER", "STORE_MANAGER", "NETWORK_ADMIN"] },
+        "actorName": { "type": "string", "maxLength": 100 },
+        "eventType": { "type": "string", "maxLength": 60 },
+        "storeId": { "type": "string", "maxLength": 64 },
+        "summary": { "type": "string", "maxLength": 300 },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "actorUid", "actorRole", "actorName", "eventType", "summary", "createdAt"]
+    },
+    "InventoryMovement": {
+      "title": "InventoryMovement",
+      "description": "Immutable inventory movement ledger entry recording stock deltas across transfers, holds, orders, and cycle counts",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "movementType": { "type": "string", "enum": ["TRANSFER_OUT", "TRANSFER_IN", "CART_HOLD_LOCK", "CART_HOLD_RELEASE", "CART_HOLD_EXPIRED", "ORDER_RESERVATION", "PICK_RELEASE", "PICK_REASSIGN_RESERVE", "STOCK_VERIFICATION"] },
+        "storeId": { "type": "string", "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "storeName": { "type": "string", "maxLength": 100 },
+        "productId": { "type": "string", "maxLength": 64, "pattern": "^[a-zA-Z0-9_\\-]+$" },
+        "productName": { "type": "string", "maxLength": 140 },
+        "quantityDelta": { "type": "integer" },
+        "beforeVerifiedQty": { "type": "integer" },
+        "afterVerifiedQty": { "type": "integer" },
+        "beforeSellableQty": { "type": "integer" },
+        "afterSellableQty": { "type": "integer" },
+        "referenceId": { "type": "string", "maxLength": 64 },
+        "notes": { "type": "string", "maxLength": 300 },
+        "actorName": { "type": "string", "maxLength": 100 },
+        "actorRole": { "type": "string", "enum": ["CUSTOMER", "STORE_MANAGER", "NETWORK_ADMIN"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "movementType", "storeId", "storeName", "productId", "productName", "quantityDelta", "beforeVerifiedQty", "afterVerifiedQty", "beforeSellableQty", "afterSellableQty", "referenceId", "notes", "actorName", "actorRole", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Authenticated user profiles isolated by UID"
+    },
+    "/users/{userId}/cart/{itemId}": {
+      "schema": { "$ref": "#/entities/CartItem" },
+      "description": "User shopping cart items"
+    },
+    "/stores/{storeId}": {
+      "schema": { "$ref": "#/entities/Store" },
+      "description": "Physical store directory"
+    },
+    "/products/{productId}": {
+      "schema": { "$ref": "#/entities/Product" },
+      "description": "Electronics product catalog"
+    },
+    "/inventory/{inventoryId}": {
+      "schema": { "$ref": "#/entities/InventoryRecord" },
+      "description": "Per-store product inventory records"
+    },
+    "/orders/{orderId}": {
+      "schema": { "$ref": "#/entities/Order" },
+      "description": "Customer demo orders"
+    },
+    "/pickTasks/{taskId}": {
+      "schema": { "$ref": "#/entities/PickTask" },
+      "description": "Store manager fulfilment pick tasks"
+    },
+    "/verifications/{verificationId}": {
+      "schema": { "$ref": "#/entities/StockVerification" },
+      "description": "Stock Whisperer verification audit records"
+    },
+    "/demandSignals/{signalId}": {
+      "schema": { "$ref": "#/entities/DemandSignal" },
+      "description": "Demand Radar unmatched search and rescue interest signals"
+    },
+    "/transferRecommendations/{recId}": {
+      "schema": { "$ref": "#/entities/TransferRecommendation" },
+      "description": "Surplus Exchange transfer recommendations"
+    },
+    "/transferDecisions/{decId}": {
+      "schema": { "$ref": "#/entities/TransferDecision" },
+      "description": "Administrator transfer approval/rejection decisions"
+    },
+    "/activityLogs/{logId}": {
+      "schema": { "$ref": "#/entities/NetworkActivity" },
+      "description": "Cross-portal retail network activity stream"
+    },
+    "/inventoryMovements/{movementId}": {
+      "schema": { "$ref": "#/entities/InventoryMovement" },
+      "description": "Immutable stock movement ledger across transfers, holds, orders, and cycle verifications"
+    }
+  }
+}

@@ -1,0 +1,8 @@
+{
+  "name": "Remix SYNAPSE",
+  "description": "The Intelligent, Connected Retail Network — Omnichannel discovery, Stock Whisperer inventory intelligence, Adaptive Fulfilment, and Demand Radar.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
